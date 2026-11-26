@@ -67,6 +67,19 @@ async function putCursorAt(app: ElectronApplication, x: number, y: number): Prom
   );
 }
 
+// Long enough for the page to have drawn and hit-tested with the latest pointer position, and for
+// the window system to have applied a move.
+async function settled(page: Page): Promise<void> {
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) => {
+        requestAnimationFrame(() =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        );
+      }),
+  );
+}
+
 function windowPosition(app: ElectronApplication): Promise<number[] | undefined> {
   return app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.getPosition());
 }
@@ -83,9 +96,13 @@ async function shownAvatar(
 
   try {
     const page = await app.firstWindow();
+    const lastIgnoreCall = await recordIgnoreCalls(app);
+    // No hint is shown while an avatar loads, so a hidden hint does not mean it is on screen yet.
+    // Taking the mouse over the body does.
+    await page.mouse.move(140, 300);
+    await expect.poll(lastIgnoreCall, "the avatar is shown").toEqual(onAvatar);
     await expect(page.locator("#hint")).toBeHidden();
     await expect(page.locator("#hint")).toHaveText("");
-    const lastIgnoreCall = await recordIgnoreCalls(app);
 
     return { app, page, lastIgnoreCall };
   } catch (error) {
@@ -111,7 +128,7 @@ for (const [name, prepare] of [
   ["is not a VRM", (path: string) => writeFileSync(path, "this is not a vrm")],
   [
     "is a 3D model without VRM data",
-    (path: string) => writeFileSync(path, makeVrm({ textured: false, vrm: false })),
+    (path: string) => writeFileSync(path, makeVrm({ textured: false, format: "gltf" })),
   ],
   ["no longer exists", () => {}],
 ] as const) {
@@ -170,7 +187,9 @@ test("loads a textured avatar without tripping the content security policy", asy
 
   try {
     const page = await app.firstWindow();
-    await expect(page.locator("#hint")).toBeHidden();
+    const lastIgnoreCall = await recordIgnoreCalls(app);
+    await page.mouse.move(140, 300);
+    await expect.poll(lastIgnoreCall, "the avatar is shown").toEqual(onAvatar);
 
     expect(errors).toEqual([]);
   } finally {
@@ -217,6 +236,7 @@ test("follows the cursor when dragged by the avatar and saves where it was dropp
     await putCursorAt(app, 1010, 1040);
     await page.mouse.move(6, 6);
     await expect.poll(() => windowPosition(app)).toEqual([147, 251]);
+    await settled(page);
     expect(await lastIgnoreCall()).toEqual(onAvatar);
 
     await page.mouse.up();
@@ -294,6 +314,18 @@ test("exposes only its own functions to the page and ignores malformed requests"
     avatarPath: writeAvatar(testInfo.outputPath("box.vrm")),
   });
   const { app, page, lastIgnoreCall } = await shownAvatar(userData);
+  const call = (name: string, ...args: unknown[]) =>
+    page.evaluate(
+      ([name, args]) => {
+        const api = (
+          globalThis as unknown as { seien: Record<string, (...args: unknown[]) => void> }
+        ).seien;
+        api[name]?.(...args);
+      },
+      [name, args] as const,
+    );
+  const ignoreCallCount = () =>
+    app.evaluate(() => (globalThis as unknown as { ignoreCalls: unknown[] }).ignoreCalls.length);
 
   try {
     expect(
@@ -302,43 +334,52 @@ test("exposes only its own functions to the page and ignores malformed requests"
       ),
     ).toEqual(["dragEnd", "dragMove", "dragStart", "loadAvatar", "onAvatarChanged", "setHit"]);
 
-    await page.mouse.move(140, 300);
+    // Off the avatar, a truthy value that is not a boolean must not make the window interactive.
+    // The well-formed request after them is the only one that may reach the window.
+    await page.mouse.move(5, 5);
+    await expect.poll(lastIgnoreCall).toEqual(offAvatar);
+    const before = await ignoreCallCount();
+    await call("setHit", "yes");
+    await call("setHit", 1);
+    await call("setHit", true);
     await expect.poll(lastIgnoreCall).toEqual(onAvatar);
+    expect(await ignoreCallCount()).toBe(before + 1);
 
+    // A move without a drag in progress.
     await putCursorAt(app, 1000, 1000);
-    await page.evaluate(() => {
-      const api = (globalThis as unknown as { seien: Record<string, (...args: unknown[]) => void> })
-        .seien;
-      api.setHit?.("yes");
-      api.setHit?.(0);
-      // A move without a drag in progress.
-      api.dragMove?.();
-      api.dragStart?.();
-    });
+    await call("dragMove");
+    await call("dragStart");
     await putCursorAt(app, 1001, 1002);
-    await page.evaluate(() => {
-      (globalThis as unknown as { seien: Record<string, () => void> }).seien.dragMove?.();
-    });
-
+    await call("dragMove");
     await expect.poll(() => windowPosition(app)).toEqual([138, 213]);
-    expect(await lastIgnoreCall()).toEqual(onAvatar);
 
-    // A move after the drag has ended, followed by a fresh drag that shows where the window was.
-    await page.evaluate(() => {
-      (globalThis as unknown as { seien: Record<string, () => void> }).seien.dragEnd?.();
-    });
+    // A move after the drag has ended: the window must still be there when the next drag starts.
+    await call("dragEnd");
     await putCursorAt(app, 1500, 1500);
-    await page.evaluate(() => {
-      const api = (globalThis as unknown as { seien: Record<string, () => void> }).seien;
-      api.dragMove?.();
-      api.dragStart?.();
-    });
+    await call("dragMove");
+    await settled(page);
+    expect(await windowPosition(app)).toEqual([138, 213]);
+    await call("dragStart");
     await putCursorAt(app, 1510, 1520);
+    await call("dragMove");
+    await expect.poll(() => windowPosition(app)).toEqual([148, 233]);
+  } finally {
+    await quit(app);
+  }
+});
+
+test("lets clicks through when the WebGL context is lost under the pointer", async ({}, testInfo) => {
+  const userData = testInfo.outputPath("user-data");
+  seed(userData, { avatarPath: writeAvatar(testInfo.outputPath("box.vrm")) });
+  const { app, page, lastIgnoreCall } = await shownAvatar(userData);
+
+  try {
     await page.evaluate(() => {
-      (globalThis as unknown as { seien: Record<string, () => void> }).seien.dragMove?.();
+      const canvas = document.getElementById("avatar") as HTMLCanvasElement;
+      canvas.getContext("webgl2")?.getExtension("WEBGL_lose_context")?.loseContext();
     });
 
-    await expect.poll(() => windowPosition(app)).toEqual([148, 233]);
+    await expect.poll(lastIgnoreCall).toEqual(offAvatar);
   } finally {
     await quit(app);
   }

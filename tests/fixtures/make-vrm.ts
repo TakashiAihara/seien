@@ -80,10 +80,12 @@ function padTo4(bytes: Uint8Array, fill: number): Uint8Array {
  * tall, with a separate 0.2 m square flag beside its top. The flag makes the silhouette different
  * in every mirror image, so a flipped hit test shows. It has no expressions, which real avatars
  * are also allowed to lack. With `textured`, the boxes carry an embedded one-pixel PNG, so loading
- * it exercises the image path the way real avatars do. With `vrm: false` the same model comes
- * without the VRM data, as a plain glTF binary.
+ * it exercises the image path the way real avatars do. `format` picks VRM 1.0 (the default),
+ * VRM 0.x, whose models face the other way and so have their left side at negative X, or a plain
+ * glTF binary without any VRM data.
  */
-export function makeVrm(options: { textured: boolean; vrm?: false }): Uint8Array {
+export function makeVrm(options: { textured: boolean; format?: "vrm0" | "gltf" }): Uint8Array {
+  const mirror = options.format === "vrm0" ? -1 : 1;
   const corners: number[] = [];
 
   for (const x of [-1, 1]) {
@@ -121,7 +123,7 @@ export function makeVrm(options: { textured: boolean; vrm?: false }): Uint8Array
     scale?: number[];
     children?: number[];
     mesh?: number;
-  }[] = bones.map(([name, , translation]) => ({ name, translation: [...translation] }));
+  }[] = bones.map(([name, , [x, y, z]]) => ({ name, translation: [x * mirror, y, z] }));
 
   bones.forEach(([, parent], index) => {
     const parentNode = nodes[parent];
@@ -178,7 +180,35 @@ export function makeVrm(options: { textured: boolean; vrm?: false }): Uint8Array
   };
 
   const { extensions: _extensions, extensionsUsed: _extensionsUsed, ...plainModel } = json;
-  const document = options.vrm === false ? plainModel : json;
+  const vrm0Model = {
+    ...plainModel,
+    extensionsUsed: ["VRM"],
+    extensions: {
+      VRM: {
+        specVersion: "0.0",
+        exporterVersion: "seien-test",
+        meta: {
+          title: "seien test box",
+          version: "1",
+          author: "seien",
+          allowedUserName: "Everyone",
+          violentUssageName: "Disallow",
+          sexualUssageName: "Disallow",
+          commercialUssageName: "Allow",
+          licenseName: "CC0",
+        },
+        humanoid: {
+          humanBones: bones.map(([name], index) => ({
+            bone: name,
+            node: index,
+            useDefaultValues: true,
+          })),
+        },
+      },
+    },
+  };
+  const document =
+    options.format === "vrm0" ? vrm0Model : options.format === "gltf" ? plainModel : json;
   const jsonChunk = padTo4(new TextEncoder().encode(JSON.stringify(document)), 0x20);
   const total = 12 + 8 + jsonChunk.byteLength + 8 + bin.byteLength;
   const glb = new Uint8Array(total);
