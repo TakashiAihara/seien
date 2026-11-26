@@ -23,6 +23,16 @@ describe("isReachable", () => {
     expect(isReachable({ x: -900, y: 211, ...size }, [primary, leftOfPrimary])).toBe(true);
   });
 
+  test("measures against a work area that does not start at the origin", () => {
+    const belowPrimary = { x: 300, y: 1080, width: 1280, height: 720 };
+
+    expect(isReachable({ x: 400, y: 1700, ...size }, [belowPrimary])).toBe(true);
+    expect(isReachable({ x: 400, y: 1080 + 720 - 63, ...size }, [belowPrimary])).toBe(false);
+    expect(isReachable({ x: 300 + 1280 - 63, y: 1200, ...size }, [belowPrimary])).toBe(false);
+    expect(isReachable({ x: 400, y: 300, ...size }, [belowPrimary])).toBe(false);
+    expect(isReachable({ x: -200, y: 1200, ...size }, [belowPrimary])).toBe(false);
+  });
+
   test("needs 64 pixels of the window inside the work area in each direction", () => {
     expect(isReachable({ x: 1920 - 64, y: 211, ...size }, [primary])).toBe(true);
     expect(isReachable({ x: 1920 - 63, y: 211, ...size }, [primary])).toBe(false);
