@@ -403,14 +403,24 @@ test("lets clicks through when the WebGL context is lost under the pointer", asy
   const userData = testInfo.outputPath("user-data");
   seed(userData, { avatarPath: writeAvatar(testInfo.outputPath("box.vrm")) });
   const { app, page, lastIgnoreCall } = await shownAvatar(userData);
+  type LoseContext = { loseContext(): void; restoreContext(): void };
 
   try {
+    // The extension has to be fetched while the context is alive; a lost context hands out none.
     await page.evaluate(() => {
       const canvas = document.getElementById("avatar") as HTMLCanvasElement;
-      canvas.getContext("webgl2")?.getExtension("WEBGL_lose_context")?.loseContext();
+      const extension = canvas.getContext("webgl2")?.getExtension("WEBGL_lose_context");
+      if (!extension) throw new Error("WEBGL_lose_context is not available");
+      (globalThis as unknown as { loseContext: LoseContext }).loseContext = extension;
+      extension.loseContext();
     });
-
     await expect.poll(lastIgnoreCall).toEqual(offAvatar);
+
+    // Once the context is back the avatar is drawn again and must take the mouse again.
+    await page.evaluate(() => {
+      (globalThis as unknown as { loseContext: LoseContext }).loseContext.restoreContext();
+    });
+    await avatarTakesMouse(page, lastIgnoreCall);
   } finally {
     await quit(app);
   }
