@@ -1,0 +1,476 @@
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { type ElectronApplication, type Page, expect, test } from "@playwright/test";
+import { makeVrm } from "../fixtures/make-vrm";
+import { launch, quit } from "./app";
+
+type IgnoreCall = { ignore: boolean; forward: boolean };
+
+const onAvatar = { ignore: false, forward: false };
+const offAvatar = { ignore: true, forward: true };
+
+// Framed to fill the window's height, the body covers x 55 to 225 over nearly the whole height
+// and the flag covers x 275 to 345, y 60 to 135. The points away from the avatar are where a hit
+// test flipped vertically or horizontally would find the flag or the body. Neighbouring probes
+// expect different answers, because the check only sees the app's most recent decision.
+const probes = [
+  [140, 300, onAvatar],
+  [5, 5, offAvatar],
+  [310, 98, onAvatar],
+  [5, 5, offAvatar],
+  [310, 72, onAvatar],
+  [310, 502, offAvatar],
+  [140, 300, onAvatar],
+  [310, 300, offAvatar],
+] as const;
+
+function seed(userData: string, settings: unknown): string {
+  const file = join(userData, "settings.json");
+  mkdirSync(userData, { recursive: true });
+  writeFileSync(file, JSON.stringify(settings));
+
+  return file;
+}
+
+function writeAvatar(path: string): string {
+  writeFileSync(path, makeVrm({ textured: true }));
+
+  return path;
+}
+
+// Records what the app asks of the window instead of letting it through, so the test sees the
+// decision the app made rather than what a given window system does with it.
+async function recordIgnoreCalls(
+  app: ElectronApplication,
+): Promise<() => Promise<IgnoreCall | undefined>> {
+  await app.evaluate(({ BrowserWindow }) => {
+    const win = BrowserWindow.getAllWindows()[0];
+    if (!win) throw new Error("no window");
+    const calls: IgnoreCall[] = [];
+    (globalThis as unknown as { ignoreCalls: IgnoreCall[] }).ignoreCalls = calls;
+    win.setIgnoreMouseEvents = (ignore, options) => {
+      calls.push({ ignore, forward: options?.forward === true });
+    };
+  });
+
+  return () =>
+    app.evaluate(() => (globalThis as unknown as { ignoreCalls: IgnoreCall[] }).ignoreCalls.at(-1));
+}
+
+// The app follows the real cursor while dragging, and Playwright's mouse does not move it.
+async function putCursorAt(app: ElectronApplication, x: number, y: number): Promise<void> {
+  await app.evaluate(
+    ({ screen }, point) => {
+      const reads = globalThis as unknown as { cursorReads: number };
+      reads.cursorReads = 0;
+      screen.getCursorScreenPoint = () => {
+        reads.cursorReads += 1;
+
+        return point;
+      };
+    },
+    { x, y },
+  );
+}
+
+// The page's request to start a drag reaches the main process on its own schedule. Moving the
+// cursor before the app has read where the drag started would make the drag look like no travel.
+async function dragStarted(app: ElectronApplication): Promise<void> {
+  await expect
+    .poll(() => app.evaluate(() => (globalThis as unknown as { cursorReads: number }).cursorReads))
+    .toBeGreaterThan(0);
+}
+
+// Long enough for the page to have drawn and hit-tested with the latest pointer position, and for
+// the window system to have applied a move.
+async function settled(page: Page): Promise<void> {
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) => {
+        requestAnimationFrame(() =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        );
+      }),
+  );
+}
+
+function windowPosition(app: ElectronApplication): Promise<number[] | undefined> {
+  return app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.getPosition());
+}
+
+// No hint is shown while an avatar loads, so a hidden hint does not mean it is on screen yet.
+// Taking the mouse over the body does. The pointer is nudged on every attempt because a move
+// sent before the page has started listening is lost, and a still pointer is not looked at again.
+async function avatarTakesMouse(
+  page: Page,
+  lastIgnoreCall: () => Promise<IgnoreCall | undefined>,
+): Promise<void> {
+  let nudge = 0;
+
+  await expect(async () => {
+    nudge = 1 - nudge;
+    await page.mouse.move(140 + nudge, 300);
+    expect(await lastIgnoreCall()).toEqual(onAvatar);
+  }, "the avatar is shown").toPass({ timeout: 20_000 });
+  await page.mouse.move(140, 300);
+}
+
+async function shownAvatar(
+  userData: string,
+  extraArgs: string[] = [],
+): Promise<{
+  app: ElectronApplication;
+  page: Page;
+  lastIgnoreCall: () => Promise<IgnoreCall | undefined>;
+}> {
+  const app = await launch(userData, extraArgs);
+
+  try {
+    const page = await app.firstWindow();
+    const lastIgnoreCall = await recordIgnoreCalls(app);
+    await avatarTakesMouse(page, lastIgnoreCall);
+    await expect(page.locator("#hint")).toBeHidden();
+    await expect(page.locator("#hint")).toHaveText("");
+
+    return { app, page, lastIgnoreCall };
+  } catch (error) {
+    await quit(app);
+    throw error;
+  }
+}
+
+test("asks for a .vrm when no avatar is chosen", async ({}, testInfo) => {
+  const app = await launch(testInfo.outputPath("user-data"));
+
+  try {
+    const page = await app.firstWindow();
+
+    await expect(page.locator("#hint")).toBeVisible();
+    await expect(page.locator("#hint")).toHaveText("Choose an avatar (.vrm) from the tray menu.");
+  } finally {
+    await quit(app);
+  }
+});
+
+for (const [name, prepare] of [
+  ["is not a VRM", (path: string) => writeFileSync(path, "this is not a vrm")],
+  [
+    "is a 3D model without VRM data",
+    (path: string) => writeFileSync(path, makeVrm({ textured: false, format: "gltf" })),
+  ],
+  ["no longer exists", () => {}],
+] as const) {
+  test(`says the avatar could not be loaded when the chosen file ${name}`, async ({}, testInfo) => {
+    const userData = testInfo.outputPath("user-data");
+    const avatarPath = testInfo.outputPath("broken.vrm");
+    prepare(avatarPath);
+    seed(userData, { avatarPath });
+
+    const app = await launch(userData);
+
+    try {
+      const page = await app.firstWindow();
+
+      await expect(page.locator("#hint")).toBeVisible();
+      await expect(page.locator("#hint")).toHaveText(
+        "The avatar could not be loaded. Choose another .vrm from the tray menu.",
+      );
+    } finally {
+      await quit(app);
+    }
+  });
+}
+
+for (const [name, extraArgs] of [
+  ["at 100% display scale", []],
+  ["at 150% display scale", ["--force-device-scale-factor=1.5"]],
+] as const) {
+  test(`shows the chosen avatar and takes the mouse only on it ${name}`, async ({}, testInfo) => {
+    const userData = testInfo.outputPath("user-data");
+    seed(userData, { avatarPath: writeAvatar(testInfo.outputPath("box.vrm")) });
+    const { app, page, lastIgnoreCall } = await shownAvatar(userData, [...extraArgs]);
+
+    try {
+      for (const [x, y, expected] of probes) {
+        await page.mouse.move(x, y);
+        await expect.poll(lastIgnoreCall, `pointer at ${x}, ${y}`).toEqual(expected);
+      }
+    } finally {
+      await quit(app);
+    }
+  });
+}
+
+test("loads a textured avatar without tripping the content security policy", async ({}, testInfo) => {
+  const userData = testInfo.outputPath("user-data");
+  seed(userData, { avatarPath: writeAvatar(testInfo.outputPath("box.vrm")) });
+
+  const app = await launch(userData);
+  const errors: string[] = [];
+  // Attached before the window exists, so nothing logged while loading is missed.
+  app.context().on("console", (message) => {
+    if (message.type() === "error") errors.push(message.text());
+  });
+  app.context().on("weberror", (error) => errors.push(String(error.error())));
+
+  try {
+    const page = await app.firstWindow();
+    const lastIgnoreCall = await recordIgnoreCalls(app);
+    await avatarTakesMouse(page, lastIgnoreCall);
+
+    expect(errors).toEqual([]);
+  } finally {
+    await quit(app);
+  }
+});
+
+test("stops taking the mouse when the pointer leaves the window from the avatar", async ({}, testInfo) => {
+  const userData = testInfo.outputPath("user-data");
+  seed(userData, { avatarPath: writeAvatar(testInfo.outputPath("box.vrm")) });
+  const { app, page, lastIgnoreCall } = await shownAvatar(userData);
+
+  try {
+    await page.mouse.move(140, 300);
+    await expect.poll(lastIgnoreCall).toEqual(onAvatar);
+
+    await page.dispatchEvent("#avatar", "pointerleave");
+    await expect.poll(lastIgnoreCall).toEqual(offAvatar);
+  } finally {
+    await quit(app);
+  }
+});
+
+test("follows the cursor when dragged by the avatar and saves where it was dropped", async ({}, testInfo) => {
+  const userData = testInfo.outputPath("user-data");
+  const avatarPath = writeAvatar(testInfo.outputPath("box.vrm"));
+  const settingsFile = seed(userData, { window: { x: 137, y: 211 }, avatarPath });
+  const { app, page, lastIgnoreCall } = await shownAvatar(userData);
+
+  try {
+    await putCursorAt(app, 1000, 1000);
+    await page.mouse.move(140, 300);
+    await expect.poll(lastIgnoreCall).toEqual(onAvatar);
+    await page.mouse.down();
+    await dragStarted(app);
+
+    await putCursorAt(app, 1030, 1020);
+    await page.mouse.move(141, 301);
+    await expect.poll(() => windowPosition(app)).toEqual([167, 231]);
+
+    // More mouse moves with the cursor in the same place must not push the window further.
+    await page.mouse.move(150, 310, { steps: 5 });
+    // While dragging, the pointer may get ahead of the avatar; the window must keep the mouse.
+    await page.mouse.move(5, 5);
+    await putCursorAt(app, 1010, 1040);
+    await page.mouse.move(6, 6);
+    await expect.poll(() => windowPosition(app)).toEqual([147, 251]);
+    await settled(page);
+    expect(await lastIgnoreCall()).toEqual(onAvatar);
+
+    await page.mouse.up();
+    await expect
+      .poll(() => JSON.parse(readFileSync(settingsFile, "utf8")))
+      .toEqual({ window: { x: 147, y: 251 }, avatarPath });
+    await expect.poll(lastIgnoreCall, "the pointer was left off the avatar").toEqual(offAvatar);
+
+    await putCursorAt(app, 1500, 1500);
+    await page.mouse.move(140, 300);
+    await expect.poll(lastIgnoreCall).toEqual(onAvatar);
+    expect(await windowPosition(app)).toEqual([147, 251]);
+  } finally {
+    await quit(app);
+  }
+});
+
+for (const [name, press] of [
+  ["starts outside the avatar", { x: 5, y: 5, button: "left", ignoring: offAvatar }],
+  ["uses the right mouse button", { x: 140, y: 300, button: "right", ignoring: onAvatar }],
+] as const) {
+  test(`does not move when the drag ${name}`, async ({}, testInfo) => {
+    const userData = testInfo.outputPath("user-data");
+    seed(userData, {
+      window: { x: 137, y: 211 },
+      avatarPath: writeAvatar(testInfo.outputPath("box.vrm")),
+    });
+    const { app, page, lastIgnoreCall } = await shownAvatar(userData);
+
+    try {
+      await putCursorAt(app, 1000, 1000);
+      await page.mouse.move(140, 300);
+      await expect.poll(lastIgnoreCall).toEqual(onAvatar);
+      await page.mouse.move(press.x, press.y);
+      await expect.poll(lastIgnoreCall).toEqual(press.ignoring);
+
+      await page.mouse.down({ button: press.button });
+      await putCursorAt(app, 1030, 1020);
+      await page.mouse.move(press.x + 30, press.y + 20);
+      await page.mouse.up({ button: press.button });
+
+      // A real drag from the avatar afterwards shows the earlier moves were handled and ignored:
+      // it starts from the untouched position.
+      await putCursorAt(app, 2000, 2000);
+      await page.mouse.move(140, 300);
+      await expect.poll(lastIgnoreCall).toEqual(onAvatar);
+      await page.mouse.down();
+      await dragStarted(app);
+      await putCursorAt(app, 2001, 2002);
+      await page.mouse.move(141, 301);
+      await expect.poll(() => windowPosition(app)).toEqual([138, 213]);
+      await page.mouse.up();
+    } finally {
+      await quit(app);
+    }
+  });
+}
+
+test("keeps the chosen avatar when the app quits", async ({}, testInfo) => {
+  const userData = testInfo.outputPath("user-data");
+  const avatarPath = writeAvatar(testInfo.outputPath("box.vrm"));
+  const settingsFile = seed(userData, { avatarPath });
+  const { app } = await shownAvatar(userData);
+  await quit(app);
+
+  const saved = JSON.parse(readFileSync(settingsFile, "utf8"));
+  expect(saved.avatarPath).toBe(avatarPath);
+  expect(Number.isInteger(saved.window.x)).toBe(true);
+  expect(Number.isInteger(saved.window.y)).toBe(true);
+});
+
+test("exposes only its own functions to the page and ignores malformed requests", async ({}, testInfo) => {
+  const userData = testInfo.outputPath("user-data");
+  seed(userData, {
+    window: { x: 137, y: 211 },
+    avatarPath: writeAvatar(testInfo.outputPath("box.vrm")),
+  });
+  const { app, page, lastIgnoreCall } = await shownAvatar(userData);
+  const call = (name: string, ...args: unknown[]) =>
+    page.evaluate(
+      ([name, args]) => {
+        const api = (
+          globalThis as unknown as { seien: Record<string, (...args: unknown[]) => void> }
+        ).seien;
+        api[name]?.(...args);
+      },
+      [name, args] as const,
+    );
+  const ignoreCallCount = () =>
+    app.evaluate(() => (globalThis as unknown as { ignoreCalls: unknown[] }).ignoreCalls.length);
+
+  try {
+    expect(
+      await page.evaluate(() =>
+        Object.keys((globalThis as unknown as { seien: object }).seien).sort(),
+      ),
+    ).toEqual(["dragEnd", "dragMove", "dragStart", "loadAvatar", "onAvatarChanged", "setHit"]);
+
+    // Off the avatar, a truthy value that is not a boolean must not make the window interactive.
+    // The well-formed request after them is the only one that may reach the window.
+    await page.mouse.move(5, 5);
+    await expect.poll(lastIgnoreCall).toEqual(offAvatar);
+    const before = await ignoreCallCount();
+    await call("setHit", "yes");
+    await call("setHit", 1);
+    await call("setHit", true);
+    await expect.poll(lastIgnoreCall).toEqual(onAvatar);
+    expect(await ignoreCallCount()).toBe(before + 1);
+
+    // A move without a drag in progress.
+    await putCursorAt(app, 1000, 1000);
+    await call("dragMove");
+    await call("dragStart");
+    await dragStarted(app);
+    await putCursorAt(app, 1001, 1002);
+    await call("dragMove");
+    await expect.poll(() => windowPosition(app)).toEqual([138, 213]);
+
+    // A move after the drag has ended: the window must still be there when the next drag starts.
+    await call("dragEnd");
+    await putCursorAt(app, 1500, 1500);
+    await call("dragMove");
+    await settled(page);
+    expect(await windowPosition(app)).toEqual([138, 213]);
+    await call("dragStart");
+    await dragStarted(app);
+    await putCursorAt(app, 1510, 1520);
+    await call("dragMove");
+    await expect.poll(() => windowPosition(app)).toEqual([148, 233]);
+  } finally {
+    await quit(app);
+  }
+});
+
+test("lets clicks through when the WebGL context is lost under the pointer", async ({}, testInfo) => {
+  const userData = testInfo.outputPath("user-data");
+  seed(userData, { avatarPath: writeAvatar(testInfo.outputPath("box.vrm")) });
+  const { app, page, lastIgnoreCall } = await shownAvatar(userData);
+  type LoseContext = { loseContext(): void; restoreContext(): void };
+
+  try {
+    // The extension has to be fetched while the context is alive; a lost context hands out none.
+    await page.evaluate(() => {
+      const canvas = document.getElementById("avatar") as HTMLCanvasElement;
+      const extension = canvas.getContext("webgl2")?.getExtension("WEBGL_lose_context");
+      if (!extension) throw new Error("WEBGL_lose_context is not available");
+      (globalThis as unknown as { loseContext: LoseContext }).loseContext = extension;
+      extension.loseContext();
+    });
+    await expect.poll(lastIgnoreCall).toEqual(offAvatar);
+
+    // Once the context is back the avatar is drawn again and must take the mouse again.
+    await page.evaluate(() => {
+      (globalThis as unknown as { loseContext: LoseContext }).loseContext.restoreContext();
+    });
+    await avatarTakesMouse(page, lastIgnoreCall);
+  } finally {
+    await quit(app);
+  }
+});
+
+test("ends the drag and saves when the pointer capture is lost", async ({}, testInfo) => {
+  const userData = testInfo.outputPath("user-data");
+  const avatarPath = writeAvatar(testInfo.outputPath("box.vrm"));
+  const settingsFile = seed(userData, { window: { x: 137, y: 211 }, avatarPath });
+  const { app, page } = await shownAvatar(userData);
+
+  try {
+    await putCursorAt(app, 1000, 1000);
+    await page.mouse.down();
+    await dragStarted(app);
+    await putCursorAt(app, 1030, 1020);
+    await page.mouse.move(141, 301);
+    await expect.poll(() => windowPosition(app)).toEqual([167, 231]);
+
+    // What happens when another window takes the mouse away mid-drag: no pointerup arrives.
+    // The browser reports the lost capture when it handles the next pointer event.
+    await page.evaluate(() => {
+      const canvas = document.getElementById("avatar") as HTMLCanvasElement;
+      // 1 is the pointer id browsers give the mouse.
+      canvas.releasePointerCapture(1);
+    });
+    await putCursorAt(app, 1500, 1500);
+    await page.mouse.move(150, 310);
+
+    await expect
+      .poll(() => JSON.parse(readFileSync(settingsFile, "utf8")))
+      .toEqual({ window: { x: 167, y: 231 }, avatarPath });
+    await settled(page);
+    expect(await windowPosition(app)).toEqual([167, 231]);
+  } finally {
+    await quit(app);
+  }
+});
+
+test("lets clicks through again after the page reloads under the pointer", async ({}, testInfo) => {
+  const userData = testInfo.outputPath("user-data");
+  seed(userData, { avatarPath: writeAvatar(testInfo.outputPath("box.vrm")) });
+  const { app, page, lastIgnoreCall } = await shownAvatar(userData);
+
+  try {
+    await page.reload();
+    await expect.poll(lastIgnoreCall, "the new page has not seen the pointer").toEqual(offAvatar);
+
+    await avatarTakesMouse(page, lastIgnoreCall);
+  } finally {
+    await quit(app);
+  }
+});

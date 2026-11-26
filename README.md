@@ -2,6 +2,11 @@
 
 A desktop avatar that asks you to do your tasks and cheers you on
 
+## Usage
+
+- Start seien, then choose `Choose avatar (.vrm)…` from the tray menu.
+- Drag the avatar to move it; the window is click-through outside the avatar.
+
 ## Development
 
 - `mise install` installs the tool versions from `.mise.toml`.

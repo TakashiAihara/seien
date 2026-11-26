@@ -66,6 +66,54 @@ describe("loadSettings", () => {
   });
 });
 
+describe("loadSettings with an avatar", () => {
+  test("reads the chosen avatar path next to the window position", () => {
+    withDir((dir) => {
+      const file = join(dir, "settings.json");
+      const settings = { window: { x: 137, y: -211 }, avatarPath: "/avatars/mine.vrm" };
+      writeFileSync(file, JSON.stringify(settings));
+
+      expect(loadSettings(file)).toEqual(settings);
+    });
+  });
+
+  test("keeps the avatar path when the window position is unusable", () => {
+    withDir((dir) => {
+      const file = join(dir, "settings.json");
+      writeFileSync(
+        file,
+        JSON.stringify({ window: { x: "137" }, avatarPath: "/avatars/mine.vrm" }),
+      );
+
+      expect(loadSettings(file)).toEqual({ avatarPath: "/avatars/mine.vrm" });
+    });
+  });
+
+  test.each([
+    ["a number", 42],
+    ["empty", ""],
+    ["null", null],
+    ["a list", ["/avatars/mine.vrm"]],
+  ])("keeps the window position and drops an avatar path that is %s", (_name, avatarPath) => {
+    withDir((dir) => {
+      const file = join(dir, "settings.json");
+      writeFileSync(file, JSON.stringify({ window: { x: 137, y: 211 }, avatarPath }));
+
+      expect(loadSettings(file)).toEqual({ window: { x: 137, y: 211 } });
+    });
+  });
+
+  test("saves the avatar path so that it reads back", () => {
+    withDir((dir) => {
+      const file = join(dir, "settings.json");
+      const settings = { window: { x: 42, y: 77 }, avatarPath: "C:\\Users\\me\\avatar.vrm" };
+      saveSettings(file, settings);
+
+      expect(loadSettings(file)).toEqual(settings);
+    });
+  });
+});
+
 describe("saveSettings", () => {
   test("throws and leaves no temporary file behind when the target cannot be replaced", () => {
     withDir((dir) => {

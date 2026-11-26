@@ -1,21 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { type ElectronApplication, _electron as electron, expect, test } from "@playwright/test";
-
-function launch(userData: string): Promise<ElectronApplication> {
-  // Chromium's sandbox does not start as root or where unprivileged user namespaces are
-  // restricted, which covers the Linux machines these tests run on.
-  const linuxArgs = process.platform === "linux" ? ["--no-sandbox"] : [];
-
-  return electron.launch({ args: [".", `--user-data-dir=${userData}`, ...linuxArgs] });
-}
-
-async function quit(app: ElectronApplication): Promise<void> {
-  const closed = app.waitForEvent("close");
-  // The evaluate call can reject because the process exits underneath it.
-  await app.evaluate(({ app }) => app.quit()).catch(() => {});
-  await closed;
-}
+import { expect, test } from "@playwright/test";
+import { launch, quit } from "./app";
 
 test("opens one frameless, transparent, always-on-top window", async ({}, testInfo) => {
   const app = await launch(testInfo.outputPath("user-data"));
