@@ -77,12 +77,13 @@ function padTo4(bytes: Uint8Array, fill: number): Uint8Array {
 
 /**
  * Builds a minimal VRM 1.0 avatar: a humanoid skeleton and an opaque box, 0.5 m wide and 1.6 m
- * tall, standing on the ground, with a 0.2 m square flag sticking out at the top of one side. The
- * flag makes the silhouette different in every mirror image, so a flipped hit test shows. It has
- * no expressions, which real avatars are also allowed to lack. With `textured`, the boxes carry an
- * embedded one-pixel PNG, so loading it exercises the image path the way real avatars do.
+ * tall, with a separate 0.2 m square flag beside its top. The flag makes the silhouette different
+ * in every mirror image, so a flipped hit test shows. It has no expressions, which real avatars
+ * are also allowed to lack. With `textured`, the boxes carry an embedded one-pixel PNG, so loading
+ * it exercises the image path the way real avatars do. With `vrm: false` the same model comes
+ * without the VRM data, as a plain glTF binary.
  */
-export function makeVrm(options: { textured: boolean }): Uint8Array {
+export function makeVrm(options: { textured: boolean; vrm?: false }): Uint8Array {
   const corners: number[] = [];
 
   for (const x of [-1, 1]) {
@@ -176,7 +177,9 @@ export function makeVrm(options: { textured: boolean }): Uint8Array {
     },
   };
 
-  const jsonChunk = padTo4(new TextEncoder().encode(JSON.stringify(json)), 0x20);
+  const { extensions: _extensions, extensionsUsed: _extensionsUsed, ...plainModel } = json;
+  const document = options.vrm === false ? plainModel : json;
+  const jsonChunk = padTo4(new TextEncoder().encode(JSON.stringify(document)), 0x20);
   const total = 12 + 8 + jsonChunk.byteLength + 8 + bin.byteLength;
   const glb = new Uint8Array(total);
   const view = new DataView(glb.buffer);
