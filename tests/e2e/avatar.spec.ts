@@ -11,11 +11,14 @@ const offAvatar = { ignore: true, forward: true };
 
 // Framed to fill the window's height, the body covers x 55 to 225 over nearly the whole height
 // and the flag covers x 275 to 345, y 60 to 135. The points away from the avatar are where a hit
-// test flipped vertically or horizontally would find the flag or the body.
+// test flipped vertically or horizontally would find the flag or the body. Neighbouring probes
+// expect different answers, because the check only sees the app's most recent decision.
 const probes = [
   [140, 300, onAvatar],
   [5, 5, offAvatar],
   [310, 98, onAvatar],
+  [5, 5, offAvatar],
+  [310, 72, onAvatar],
   [310, 502, offAvatar],
   [140, 300, onAvatar],
   [310, 300, offAvatar],
