@@ -3,6 +3,7 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 
 import { blinkWeight, breath } from "./motion";
+import { lowerArms } from "./pose";
 
 type AvatarRenderer = {
   parse(bytes: ArrayBuffer): Promise<VRM>;
@@ -41,6 +42,7 @@ export function createAvatarRenderer(canvas: HTMLCanvasElement): AvatarRenderer 
     renderer.setSize(window.innerWidth, window.innerHeight, false);
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
+    needsReCheck = true;
   }
 
   resize();
@@ -54,20 +56,6 @@ export function createAvatarRenderer(canvas: HTMLCanvasElement): AvatarRenderer 
     scene.remove(vrm.scene);
     VRMUtils.deepDispose(vrm.scene);
     vrm = undefined;
-  }
-
-  function lowerArms(avatar: VRM): void {
-    const leftUpperArm = avatar.humanoid.getNormalizedBoneNode("leftUpperArm");
-
-    if (leftUpperArm) {
-      leftUpperArm.rotateZ(-1.2);
-    }
-
-    const rightUpperArm = avatar.humanoid.getNormalizedBoneNode("rightUpperArm");
-
-    if (rightUpperArm) {
-      rightUpperArm.rotateZ(1.2);
-    }
   }
 
   function frameAvatar(avatar: VRM): void {
@@ -186,6 +174,23 @@ export function createAvatarRenderer(canvas: HTMLCanvasElement): AvatarRenderer 
     needsReCheck = true;
   });
 
+  canvas.addEventListener("webglcontextlost", (event) => {
+    event.preventDefault();
+
+    if (dragPointerId !== undefined) {
+      dragPointerId = undefined;
+      window.seien.dragEnd();
+      needsReCheck = true;
+    }
+
+    hit = false;
+    window.seien.setHit(false);
+  });
+
+  canvas.addEventListener("webglcontextrestored", () => {
+    needsReCheck = true;
+  });
+
   function frame(timestamp: number): void {
     timer.update(timestamp);
 
@@ -206,7 +211,7 @@ export function createAvatarRenderer(canvas: HTMLCanvasElement): AvatarRenderer 
         chest.rotation.x = breath(seconds) * 0.02;
       }
 
-      currentVrm.update(delta);
+      currentVrm.update(Math.min(delta, 0.1));
     }
 
     renderer.render(scene, camera);
@@ -214,6 +219,7 @@ export function createAvatarRenderer(canvas: HTMLCanvasElement): AvatarRenderer 
     requestAnimationFrame(frame);
   }
 
+  window.seien.setHit(false);
   requestAnimationFrame(frame);
 
   return {
