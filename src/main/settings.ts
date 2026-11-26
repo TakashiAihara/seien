@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
-export type Settings = { window?: { x: number; y: number } };
+export type Settings = { window?: { x: number; y: number }; avatarPath?: string };
 
 export function loadSettings(file: string): Settings {
   let parsed: unknown;
@@ -12,20 +12,31 @@ export function loadSettings(file: string): Settings {
     return {};
   }
 
-  const window = (parsed as { window?: { x?: unknown; y?: unknown } | null } | null)?.window;
-  const x = window?.x;
-  const y = window?.y;
-
-  if (
-    typeof x !== "number" ||
-    typeof y !== "number" ||
-    !Number.isInteger(x) ||
-    !Number.isInteger(y)
-  ) {
+  if (typeof parsed !== "object" || parsed === null) {
     return {};
   }
 
-  return { window: { x, y } };
+  const source = parsed as { window?: unknown; avatarPath?: unknown };
+  const settings: Settings = {};
+
+  if (typeof source.window === "object" && source.window !== null) {
+    const window = source.window as { x?: unknown; y?: unknown };
+
+    if (
+      typeof window.x === "number" &&
+      typeof window.y === "number" &&
+      Number.isInteger(window.x) &&
+      Number.isInteger(window.y)
+    ) {
+      settings.window = { x: window.x, y: window.y };
+    }
+  }
+
+  if (typeof source.avatarPath === "string" && source.avatarPath.length > 0) {
+    settings.avatarPath = source.avatarPath;
+  }
+
+  return settings;
 }
 
 export function saveSettings(file: string, settings: Settings): void {

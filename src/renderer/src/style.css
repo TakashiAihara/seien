@@ -1,5 +1,34 @@
 html,
 body {
+  width: 100%;
+  height: 100%;
   margin: 0;
   overflow: hidden;
+  background: transparent;
+}
+
+#avatar {
+  display: block;
+  width: 100vw;
+  height: 100vh;
+}
+
+#hint {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  padding: 24px;
+  color: white;
+  font:
+    14px system-ui,
+    sans-serif;
+  text-align: center;
+  background: rgb(0 0 0 / 70%);
+  pointer-events: none;
+}
+
+#hint[hidden] {
+  display: none;
 }
