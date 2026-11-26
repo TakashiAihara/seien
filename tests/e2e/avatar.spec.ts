@@ -61,10 +61,24 @@ async function recordIgnoreCalls(
 async function putCursorAt(app: ElectronApplication, x: number, y: number): Promise<void> {
   await app.evaluate(
     ({ screen }, point) => {
-      screen.getCursorScreenPoint = () => point;
+      const reads = globalThis as unknown as { cursorReads: number };
+      reads.cursorReads = 0;
+      screen.getCursorScreenPoint = () => {
+        reads.cursorReads += 1;
+
+        return point;
+      };
     },
     { x, y },
   );
+}
+
+// The page's request to start a drag reaches the main process on its own schedule. Moving the
+// cursor before the app has read where the drag started would make the drag look like no travel.
+async function dragStarted(app: ElectronApplication): Promise<void> {
+  await expect
+    .poll(() => app.evaluate(() => (globalThis as unknown as { cursorReads: number }).cursorReads))
+    .toBeGreaterThan(0);
 }
 
 // Long enough for the page to have drawn and hit-tested with the latest pointer position, and for
@@ -224,6 +238,7 @@ test("follows the cursor when dragged by the avatar and saves where it was dropp
     await page.mouse.move(140, 300);
     await expect.poll(lastIgnoreCall).toEqual(onAvatar);
     await page.mouse.down();
+    await dragStarted(app);
 
     await putCursorAt(app, 1030, 1020);
     await page.mouse.move(141, 301);
@@ -284,6 +299,7 @@ for (const [name, press] of [
       await page.mouse.move(140, 300);
       await expect.poll(lastIgnoreCall).toEqual(onAvatar);
       await page.mouse.down();
+      await dragStarted(app);
       await putCursorAt(app, 2001, 2002);
       await page.mouse.move(141, 301);
       await expect.poll(() => windowPosition(app)).toEqual([138, 213]);
@@ -349,6 +365,7 @@ test("exposes only its own functions to the page and ignores malformed requests"
     await putCursorAt(app, 1000, 1000);
     await call("dragMove");
     await call("dragStart");
+    await dragStarted(app);
     await putCursorAt(app, 1001, 1002);
     await call("dragMove");
     await expect.poll(() => windowPosition(app)).toEqual([138, 213]);
@@ -360,6 +377,7 @@ test("exposes only its own functions to the page and ignores malformed requests"
     await settled(page);
     expect(await windowPosition(app)).toEqual([138, 213]);
     await call("dragStart");
+    await dragStarted(app);
     await putCursorAt(app, 1510, 1520);
     await call("dragMove");
     await expect.poll(() => windowPosition(app)).toEqual([148, 233]);
@@ -380,6 +398,56 @@ test("lets clicks through when the WebGL context is lost under the pointer", asy
     });
 
     await expect.poll(lastIgnoreCall).toEqual(offAvatar);
+  } finally {
+    await quit(app);
+  }
+});
+
+test("ends the drag and saves when the pointer capture is lost", async ({}, testInfo) => {
+  const userData = testInfo.outputPath("user-data");
+  const avatarPath = writeAvatar(testInfo.outputPath("box.vrm"));
+  const settingsFile = seed(userData, { window: { x: 137, y: 211 }, avatarPath });
+  const { app, page } = await shownAvatar(userData);
+
+  try {
+    await putCursorAt(app, 1000, 1000);
+    await page.mouse.down();
+    await dragStarted(app);
+    await putCursorAt(app, 1030, 1020);
+    await page.mouse.move(141, 301);
+    await expect.poll(() => windowPosition(app)).toEqual([167, 231]);
+
+    // What happens when another window takes the mouse away mid-drag: no pointerup arrives.
+    // The browser reports the lost capture when it handles the next pointer event.
+    await page.evaluate(() => {
+      const canvas = document.getElementById("avatar") as HTMLCanvasElement;
+      // 1 is the pointer id browsers give the mouse.
+      canvas.releasePointerCapture(1);
+    });
+    await putCursorAt(app, 1500, 1500);
+    await page.mouse.move(150, 310);
+
+    await expect
+      .poll(() => JSON.parse(readFileSync(settingsFile, "utf8")))
+      .toEqual({ window: { x: 167, y: 231 }, avatarPath });
+    await settled(page);
+    expect(await windowPosition(app)).toEqual([167, 231]);
+  } finally {
+    await quit(app);
+  }
+});
+
+test("lets clicks through again after the page reloads under the pointer", async ({}, testInfo) => {
+  const userData = testInfo.outputPath("user-data");
+  seed(userData, { avatarPath: writeAvatar(testInfo.outputPath("box.vrm")) });
+  const { app, page, lastIgnoreCall } = await shownAvatar(userData);
+
+  try {
+    await page.reload();
+    await expect.poll(lastIgnoreCall, "the new page has not seen the pointer").toEqual(offAvatar);
+
+    await page.mouse.move(141, 301);
+    await expect.poll(lastIgnoreCall).toEqual(onAvatar);
   } finally {
     await quit(app);
   }
