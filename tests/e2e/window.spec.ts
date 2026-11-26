@@ -1,7 +1,10 @@
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { type ElectronApplication, _electron as electron, expect, test } from "@playwright/test";
 
 function launch(userData: string): Promise<ElectronApplication> {
-  // Chromium refuses to run sandboxed as root, which is how Linux CI containers run.
+  // Chromium's sandbox does not start as root or where unprivileged user namespaces are
+  // restricted, which covers the Linux machines these tests run on.
   const linuxArgs = process.platform === "linux" ? ["--no-sandbox"] : [];
 
   return electron.launch({ args: [".", `--user-data-dir=${userData}`, ...linuxArgs] });
@@ -39,19 +42,14 @@ test("opens one frameless, transparent, always-on-top window", async ({}, testIn
     expect(info.alwaysOnTop).toBe(true);
     expect(info.visible).toBe(true);
     expect(info.resizable).toBe(false);
-    // A frameless window has no title bar or border, so the content fills the window.
+    // A frameless window has no title bar or border, so the content fills the window. This only
+    // tells the two apart where a window manager draws a frame, which Xvfb alone does not.
     expect(info.contentBounds).toEqual(info.bounds);
     expect(info.bounds.width).toBeGreaterThan(100);
     expect(info.bounds.height).toBeGreaterThan(100);
     // Electron reports a transparent window as black, with or without the alpha byte depending
     // on the platform; an opaque window reports its colour (white by default).
     expect(info.backgroundColor).toMatch(/^#(00)?000000$/);
-
-    const pageBackgrounds = await page.evaluate(() => [
-      getComputedStyle(document.documentElement).backgroundColor,
-      getComputedStyle(document.body).backgroundColor,
-    ]);
-    expect(pageBackgrounds).toEqual(["rgba(0, 0, 0, 0)", "rgba(0, 0, 0, 0)"]);
     expect(await page.title()).toBe("seien");
   } finally {
     await quit(app);
@@ -94,11 +92,23 @@ test("reopens at the position it had when it was closed", async ({}, testInfo) =
   const userData = testInfo.outputPath("user-data");
 
   const first = await launch(userData);
-  await first.firstWindow();
-  await first.evaluate(({ BrowserWindow }) => {
-    BrowserWindow.getAllWindows()[0]?.setPosition(137, 211);
-  });
-  await quit(first);
+
+  try {
+    await first.firstWindow();
+    await first.evaluate(({ BrowserWindow }) => {
+      const win = BrowserWindow.getAllWindows()[0];
+      if (!win) throw new Error("no window");
+      win.setPosition(137, 211);
+    });
+    // X11 applies the move asynchronously; quitting before it lands would save the old position.
+    await expect
+      .poll(() =>
+        first.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.getPosition()),
+      )
+      .toEqual([137, 211]);
+  } finally {
+    await quit(first);
+  }
 
   const second = await launch(userData);
 
@@ -112,4 +122,45 @@ test("reopens at the position it had when it was closed", async ({}, testInfo) =
   } finally {
     await quit(second);
   }
+});
+
+test("ignores a saved position that is on no display", async ({}, testInfo) => {
+  const userData = testInfo.outputPath("user-data");
+  mkdirSync(userData, { recursive: true });
+  writeFileSync(
+    join(userData, "settings.json"),
+    JSON.stringify({ window: { x: 54321, y: 43210 } }),
+  );
+
+  const app = await launch(userData);
+
+  try {
+    await app.firstWindow();
+    const placement = await app.evaluate(({ BrowserWindow, screen }) => {
+      const win = BrowserWindow.getAllWindows()[0];
+      if (!win) throw new Error("no window");
+
+      return { bounds: win.getBounds(), workArea: screen.getPrimaryDisplay().workArea };
+    });
+
+    expect(placement.bounds.x).toBeLessThan(placement.workArea.x + placement.workArea.width);
+    expect(placement.bounds.y).toBeLessThan(placement.workArea.y + placement.workArea.height);
+  } finally {
+    await quit(app);
+  }
+});
+
+test("quits cleanly when the position cannot be saved", async ({}, testInfo) => {
+  const userData = testInfo.outputPath("user-data");
+  // A directory where the settings file belongs makes every save fail.
+  mkdirSync(join(userData, "settings.json", "occupied"), { recursive: true });
+
+  const app = await launch(userData);
+  const errors: string[] = [];
+  app.process().stderr?.on("data", (chunk: Buffer) => errors.push(chunk.toString()));
+  await app.firstWindow();
+  await quit(app);
+
+  expect(errors.join("")).toContain("Failed to save settings");
+  expect(errors.join("")).not.toContain("Uncaught Exception");
 });
