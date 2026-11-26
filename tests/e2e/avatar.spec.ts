@@ -319,6 +319,23 @@ test("exposes only its own functions to the page and ignores malformed requests"
 
     await expect.poll(() => windowPosition(app)).toEqual([138, 213]);
     expect(await lastIgnoreCall()).toEqual(onAvatar);
+
+    // A move after the drag has ended, followed by a fresh drag that shows where the window was.
+    await page.evaluate(() => {
+      (globalThis as unknown as { seien: Record<string, () => void> }).seien.dragEnd?.();
+    });
+    await putCursorAt(app, 1500, 1500);
+    await page.evaluate(() => {
+      const api = (globalThis as unknown as { seien: Record<string, () => void> }).seien;
+      api.dragMove?.();
+      api.dragStart?.();
+    });
+    await putCursorAt(app, 1510, 1520);
+    await page.evaluate(() => {
+      (globalThis as unknown as { seien: Record<string, () => void> }).seien.dragMove?.();
+    });
+
+    await expect.poll(() => windowPosition(app)).toEqual([148, 233]);
   } finally {
     await quit(app);
   }
