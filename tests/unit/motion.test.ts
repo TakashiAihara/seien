@@ -5,6 +5,7 @@ describe("blinkWeight", () => {
   test("keeps the eyes open between blinks", () => {
     expect(blinkWeight(0)).toBe(0);
     expect(blinkWeight(0.2)).toBeCloseTo(0, 6);
+    expect(blinkWeight(0.25)).toBe(0);
     expect(blinkWeight(1.7)).toBe(0);
     expect(blinkWeight(3.99)).toBe(0);
   });

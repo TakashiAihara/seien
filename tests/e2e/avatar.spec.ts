@@ -46,8 +46,7 @@ test("asks for a .vrm when no avatar is chosen", async ({}, testInfo) => {
     const page = await app.firstWindow();
 
     await expect(page.locator("#hint")).toBeVisible();
-    await expect(page.locator("#hint")).toContainText(".vrm");
-    await expect(page.locator("#hint")).toContainText("tray");
+    await expect(page.locator("#hint")).toHaveText("Choose an avatar (.vrm) from the tray menu.");
   } finally {
     await quit(app);
   }
@@ -69,8 +68,9 @@ for (const [name, prepare] of [
       const page = await app.firstWindow();
 
       await expect(page.locator("#hint")).toBeVisible();
-      await expect(page.locator("#hint")).toContainText("could not be loaded");
-      await expect(page.locator("#hint")).toContainText("tray");
+      await expect(page.locator("#hint")).toHaveText(
+        "The avatar could not be loaded. Choose another .vrm from the tray menu.",
+      );
     } finally {
       await quit(app);
     }
@@ -93,16 +93,23 @@ test("shows the chosen avatar and takes the mouse only on it", async ({}, testIn
     await expect(page.locator("#hint")).toBeHidden();
     const lastIgnoreCall = await recordIgnoreCalls(app);
 
-    // The box is 0.5 m by 1.6 m and the avatar is framed to fill the 400 by 600 window's height,
-    // so it covers the centre and leaves the corners empty.
-    await page.mouse.move(200, 300);
-    await expect.poll(lastIgnoreCall).toEqual({ ignore: false, forward: false });
+    // Framed to fill the window's height, the body covers x 55 to 225 over nearly the whole
+    // height and the flag covers x 275 to 345, y 60 to 135. The points away from the avatar are
+    // where a hit test flipped vertically or horizontally would find the flag or the body.
+    const onAvatar = { ignore: false, forward: false };
+    const offAvatar = { ignore: true, forward: true };
 
-    await page.mouse.move(5, 5);
-    await expect.poll(lastIgnoreCall).toEqual({ ignore: true, forward: true });
-
-    await page.mouse.move(200, 300);
-    await expect.poll(lastIgnoreCall).toEqual({ ignore: false, forward: false });
+    for (const [x, y, expected] of [
+      [140, 300, onAvatar],
+      [5, 5, offAvatar],
+      [310, 98, onAvatar],
+      [310, 502, offAvatar],
+      [140, 300, onAvatar],
+      [310, 300, offAvatar],
+    ] as const) {
+      await page.mouse.move(x, y);
+      await expect.poll(lastIgnoreCall, `pointer at ${x}, ${y}`).toEqual(expected);
+    }
 
     // Loading a textured avatar goes through blob: URLs, which a too-strict CSP reports here.
     expect(errors).toEqual([]);
@@ -122,11 +129,11 @@ test("moves with the mouse when dragged by the avatar and saves where it was dro
     const page = await app.firstWindow();
     await expect(page.locator("#hint")).toBeHidden();
     const lastIgnoreCall = await recordIgnoreCalls(app);
-    await page.mouse.move(200, 300);
+    await page.mouse.move(140, 300);
     await expect.poll(lastIgnoreCall).toEqual({ ignore: false, forward: false });
 
     await page.mouse.down();
-    await page.mouse.move(230, 320);
+    await page.mouse.move(170, 320);
     await expect
       .poll(() =>
         app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.getPosition()),
@@ -155,7 +162,7 @@ test("does not move when the drag starts outside the avatar", async ({}, testInf
     const page = await app.firstWindow();
     await expect(page.locator("#hint")).toBeHidden();
     const lastIgnoreCall = await recordIgnoreCalls(app);
-    await page.mouse.move(200, 300);
+    await page.mouse.move(140, 300);
     await expect.poll(lastIgnoreCall).toEqual({ ignore: false, forward: false });
     await page.mouse.move(5, 5);
     await expect.poll(lastIgnoreCall).toEqual({ ignore: true, forward: true });
@@ -164,7 +171,7 @@ test("does not move when the drag starts outside the avatar", async ({}, testInf
     await page.mouse.move(35, 25);
     await page.mouse.up();
     // Give a wrongly started drag the same time a real one needs to show up.
-    await page.mouse.move(200, 300);
+    await page.mouse.move(140, 300);
     await expect.poll(lastIgnoreCall).toEqual({ ignore: false, forward: false });
 
     const position = await app.evaluate(({ BrowserWindow }) =>
@@ -190,4 +197,48 @@ test("keeps the chosen avatar when the app quits", async ({}, testInfo) => {
   expect(saved.avatarPath).toBe(avatarPath);
   expect(Number.isInteger(saved.window.x)).toBe(true);
   expect(Number.isInteger(saved.window.y)).toBe(true);
+});
+
+test("ignores malformed requests from the page", async ({}, testInfo) => {
+  const userData = testInfo.outputPath("user-data");
+  seed(userData, {
+    window: { x: 137, y: 211 },
+    avatarPath: writeAvatar(testInfo.outputPath("box.vrm")),
+  });
+
+  const app = await launch(userData);
+
+  try {
+    const page = await app.firstWindow();
+    await expect(page.locator("#hint")).toBeHidden();
+    const lastIgnoreCall = await recordIgnoreCalls(app);
+    await page.mouse.move(140, 300);
+    await expect.poll(lastIgnoreCall).toEqual({ ignore: false, forward: false });
+
+    await page.evaluate(() => {
+      const api = (globalThis as unknown as { seien: Record<string, (...args: unknown[]) => void> })
+        .seien;
+      api.setHit?.("yes");
+      api.setHit?.(0);
+      api.dragBy?.(Number.NaN, 5);
+      api.dragBy?.(5, Number.POSITIVE_INFINITY);
+      api.dragBy?.("30", 20);
+      // A well-formed request last, so the test knows the earlier ones have been handled.
+      api.dragBy?.(1.4, 2.6);
+    });
+
+    await expect
+      .poll(() =>
+        app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.getPosition()),
+      )
+      .toEqual([138, 214]);
+    expect(await lastIgnoreCall()).toEqual({ ignore: false, forward: false });
+    expect(
+      await page.evaluate(() =>
+        Object.keys((globalThis as unknown as { seien: object }).seien).sort(),
+      ),
+    ).toEqual(["dragBy", "dragEnd", "loadAvatar", "onAvatarChanged", "setHit"]);
+  } finally {
+    await quit(app);
+  }
 });

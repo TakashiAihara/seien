@@ -76,10 +76,11 @@ function padTo4(bytes: Uint8Array, fill: number): Uint8Array {
 }
 
 /**
- * Builds a minimal VRM 1.0 avatar: a humanoid skeleton and one opaque box, 0.5 m wide and 1.6 m
- * tall, standing on the ground. It has no expressions, which real avatars are also allowed to
- * lack. With `textured`, the box carries an embedded one-pixel PNG, so loading it exercises the
- * image path the way real avatars do.
+ * Builds a minimal VRM 1.0 avatar: a humanoid skeleton and an opaque box, 0.5 m wide and 1.6 m
+ * tall, standing on the ground, with a 0.2 m square flag sticking out at the top of one side. The
+ * flag makes the silhouette different in every mirror image, so a flipped hit test shows. It has
+ * no expressions, which real avatars are also allowed to lack. With `textured`, the boxes carry an
+ * embedded one-pixel PNG, so loading it exercises the image path the way real avatars do.
  */
 export function makeVrm(options: { textured: boolean }): Uint8Array {
   const corners: number[] = [];
@@ -113,8 +114,13 @@ export function makeVrm(options: { textured: boolean }): Uint8Array {
     return bufferView;
   });
 
-  const nodes: { name: string; translation: number[]; children?: number[]; mesh?: number }[] =
-    bones.map(([name, , translation]) => ({ name, translation: [...translation] }));
+  const nodes: {
+    name: string;
+    translation: number[];
+    scale?: number[];
+    children?: number[];
+    mesh?: number;
+  }[] = bones.map(([name, , translation]) => ({ name, translation: [...translation] }));
 
   bones.forEach(([, parent], index) => {
     const parentNode = nodes[parent];
@@ -122,6 +128,7 @@ export function makeVrm(options: { textured: boolean }): Uint8Array {
     parentNode.children = [...(parentNode.children ?? []), index];
   });
   nodes.push({ name: "body", mesh: 0, translation: [...boxCentre] });
+  nodes.push({ name: "flag", mesh: 0, translation: [0.5, 1.5, 0], scale: [0.4, 0.125, 1] });
 
   const material = options.textured
     ? { pbrMetallicRoughness: { baseColorTexture: { index: 0 } }, doubleSided: true }
@@ -130,7 +137,7 @@ export function makeVrm(options: { textured: boolean }): Uint8Array {
     asset: { version: "2.0" },
     extensionsUsed: ["VRMC_vrm"],
     scene: 0,
-    scenes: [{ nodes: [0, bones.length] }],
+    scenes: [{ nodes: [0, bones.length, bones.length + 1] }],
     nodes,
     meshes: [
       { primitives: [{ attributes: { POSITION: 0, TEXCOORD_0: 2 }, indices: 1, material: 0 }] },
