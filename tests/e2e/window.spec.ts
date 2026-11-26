@@ -132,22 +132,25 @@ test("ignores a saved position that is on no display", async ({}, testInfo) => {
     JSON.stringify({ window: { x: 54321, y: 43210 } }),
   );
 
-  const app = await launch(userData);
+  // The window system may pull an off-screen window back to an edge by itself, so the check is
+  // that the window lands where a first launch puts it, not merely somewhere visible.
+  const positions: (number[] | undefined)[] = [];
 
-  try {
-    await app.firstWindow();
-    const placement = await app.evaluate(({ BrowserWindow, screen }) => {
-      const win = BrowserWindow.getAllWindows()[0];
-      if (!win) throw new Error("no window");
+  for (const dir of [testInfo.outputPath("fresh-user-data"), userData]) {
+    const app = await launch(dir);
 
-      return { bounds: win.getBounds(), workArea: screen.getPrimaryDisplay().workArea };
-    });
-
-    expect(placement.bounds.x).toBeLessThan(placement.workArea.x + placement.workArea.width);
-    expect(placement.bounds.y).toBeLessThan(placement.workArea.y + placement.workArea.height);
-  } finally {
-    await quit(app);
+    try {
+      await app.firstWindow();
+      positions.push(
+        await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.getPosition()),
+      );
+    } finally {
+      await quit(app);
+    }
   }
+
+  expect(positions[0]).toHaveLength(2);
+  expect(positions[1]).toEqual(positions[0]);
 });
 
 test("quits cleanly when the position cannot be saved", async ({}, testInfo) => {
