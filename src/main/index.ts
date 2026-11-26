@@ -24,6 +24,7 @@ function createWindow(settingsFile: string): void {
     transparent: true,
     alwaysOnTop: true,
     resizable: false,
+    minimizable: false,
     skipTaskbar: true,
     hasShadow: false,
     webPreferences: {
