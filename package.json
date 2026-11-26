@@ -29,6 +29,20 @@
     "typescript": "7.0.2",
     "vite": "8.4.0"
   },
+  "build": {
+    "appId": "io.github.takashiaihara.seien",
+    "productName": "seien",
+    "files": [
+      "out/**",
+      "resources/**"
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "directories": {
+      "output": "dist"
+    }
+  },
   "trustedDependencies": [
     "electron"
   ]
