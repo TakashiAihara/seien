@@ -1,16 +1,25 @@
 import { join } from "node:path";
-import { app, BrowserWindow, Menu, Tray, type BrowserWindowConstructorOptions } from "electron";
+import {
+  app,
+  BrowserWindow,
+  Menu,
+  screen,
+  Tray,
+  type BrowserWindowConstructorOptions,
+} from "electron";
 
+import { isReachable } from "./placement";
 import { loadSettings, saveSettings } from "./settings";
 
 // A Tray is garbage collected unless a reference outlives the creating function.
 let tray: Tray | undefined;
 
+const windowSize = { width: 400, height: 600 };
+
 function createWindow(settingsFile: string): void {
   const settings = loadSettings(settingsFile);
   const options: BrowserWindowConstructorOptions = {
-    width: 400,
-    height: 600,
+    ...windowSize,
     frame: false,
     transparent: true,
     alwaysOnTop: true,
@@ -25,7 +34,13 @@ function createWindow(settingsFile: string): void {
     },
   };
 
-  if (settings.window) {
+  if (
+    settings.window &&
+    isReachable(
+      { ...settings.window, ...windowSize },
+      screen.getAllDisplays().map((display) => display.workArea),
+    )
+  ) {
     options.x = settings.window.x;
     options.y = settings.window.y;
   }
@@ -34,10 +49,15 @@ function createWindow(settingsFile: string): void {
 
   win.on("close", () => {
     const { x, y } = win.getBounds();
-    saveSettings(settingsFile, { window: { x, y } });
+
+    try {
+      saveSettings(settingsFile, { window: { x, y } });
+    } catch (error) {
+      console.warn("Failed to save settings", error);
+    }
   });
 
-  if (process.env.ELECTRON_RENDERER_URL) {
+  if (!app.isPackaged && process.env.ELECTRON_RENDERER_URL) {
     void win.loadURL(process.env.ELECTRON_RENDERER_URL);
   } else {
     void win.loadFile(join(import.meta.dirname, "../renderer/index.html"));

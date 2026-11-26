@@ -1,6 +1,5 @@
-import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { dirname } from "node:path";
 
 export type Settings = { window?: { x: number; y: number } };
 
@@ -13,17 +12,9 @@ export function loadSettings(file: string): Settings {
     return {};
   }
 
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    return {};
-  }
-
-  const window = (parsed as { window?: unknown }).window;
-
-  if (typeof window !== "object" || window === null || Array.isArray(window)) {
-    return {};
-  }
-
-  const { x, y } = window as { x?: unknown; y?: unknown };
+  const window = (parsed as { window?: { x?: unknown; y?: unknown } | null } | null)?.window;
+  const x = window?.x;
+  const y = window?.y;
 
   if (
     typeof x !== "number" ||
@@ -38,16 +29,20 @@ export function loadSettings(file: string): Settings {
 }
 
 export function saveSettings(file: string, settings: Settings): void {
-  const directory = dirname(file);
-  const temporary = join(directory, `.${basename(file)}.${randomUUID()}.tmp`);
+  const temporary = `${file}.tmp`;
 
-  mkdirSync(directory, { recursive: true });
+  mkdirSync(dirname(file), { recursive: true });
 
   try {
     writeFileSync(temporary, JSON.stringify(settings));
     renameSync(temporary, file);
   } catch (error) {
-    rmSync(temporary, { force: true });
+    try {
+      rmSync(temporary, { force: true });
+    } catch {
+      // Preserve the original write or rename failure.
+    }
+
     throw error;
   }
 }
