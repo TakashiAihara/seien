@@ -44,7 +44,8 @@ test("opens one frameless, transparent, always-on-top window", async ({}, testIn
     expect(info.visible).toBe(true);
     expect(info.resizable).toBe(false);
     // Hidden from the taskbar, a minimized window would have nothing to restore it from.
-    expect(info.minimizable).toBe(false);
+    // Electron always reports a window as minimizable on Linux.
+    if (process.platform !== "linux") expect(info.minimizable).toBe(false);
     // A frameless window has no title bar or border, so the content fills the window. This only
     // tells the two apart where a window manager draws a frame, which Xvfb alone does not.
     expect(info.contentBounds).toEqual(info.bounds);
