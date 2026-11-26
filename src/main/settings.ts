@@ -12,7 +12,7 @@ export function loadSettings(file: string): Settings {
     return {};
   }
 
-  if (typeof parsed !== "object" || parsed === null) {
+  if (parsed === null) {
     return {};
   }
 

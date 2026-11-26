@@ -96,21 +96,30 @@ function createWindow(settingsFile: string) {
     setHit(win, hit);
   });
 
-  ipcMain.on("seien:drag-by", (_event, dx: unknown, dy: unknown) => {
-    if (
-      typeof dx !== "number" ||
-      typeof dy !== "number" ||
-      !Number.isFinite(dx) ||
-      !Number.isFinite(dy)
-    ) {
+  let drag: { cursorX: number; cursorY: number; windowX: number; windowY: number } | undefined;
+
+  ipcMain.on("seien:drag-start", () => {
+    const cursor = screen.getCursorScreenPoint();
+    const { x, y } = win.getBounds();
+    drag = { cursorX: cursor.x, cursorY: cursor.y, windowX: x, windowY: y };
+  });
+
+  ipcMain.on("seien:drag-move", () => {
+    const currentDrag = drag;
+
+    if (!currentDrag) {
       return;
     }
 
-    const { x, y } = win.getBounds();
-    win.setPosition(x + Math.round(dx), y + Math.round(dy));
+    const cursor = screen.getCursorScreenPoint();
+    win.setPosition(
+      currentDrag.windowX + cursor.x - currentDrag.cursorX,
+      currentDrag.windowY + cursor.y - currentDrag.cursorY,
+    );
   });
 
   ipcMain.on("seien:drag-end", () => {
+    drag = undefined;
     saveWindowPosition();
   });
 
@@ -134,6 +143,10 @@ async function chooseAvatar(
     properties: ["openFile"],
     filters: [{ name: "VRM avatar", extensions: ["vrm"] }],
   });
+
+  if (win.isDestroyed()) {
+    return;
+  }
 
   if (result.canceled) {
     return;

@@ -5,8 +5,10 @@ export type SeienApi = {
   onAvatarChanged(listener: () => void): void;
   /** Whether the pointer is over a pixel of the avatar. */
   setHit(hit: boolean): void;
-  /** Move the window by this many pixels. */
-  dragBy(dx: number, dy: number): void;
+  /** A drag of the window has started. */
+  dragStart(): void;
+  /** The pointer moved during a drag; the window should follow the cursor. */
+  dragMove(): void;
   /** The drag is over; the position should be saved. */
   dragEnd(): void;
 };

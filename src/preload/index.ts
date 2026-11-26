@@ -13,8 +13,12 @@ const api: SeienApi = {
     ipcRenderer.send("seien:set-hit", hit);
   },
 
-  dragBy: (dx, dy) => {
-    ipcRenderer.send("seien:drag-by", dx, dy);
+  dragStart: () => {
+    ipcRenderer.send("seien:drag-start");
+  },
+
+  dragMove: () => {
+    ipcRenderer.send("seien:drag-move");
   },
 
   dragEnd: () => {

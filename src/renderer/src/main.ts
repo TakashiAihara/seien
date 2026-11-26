@@ -1,3 +1,5 @@
+import { VRMUtils } from "@pixiv/three-vrm";
+
 import { createAvatarRenderer } from "./avatar";
 
 const chooseAvatarHint = "Choose an avatar (.vrm) from the tray menu.";
@@ -18,33 +20,39 @@ const canvas: HTMLCanvasElement = canvasElement;
 const hint: HTMLDivElement = hintElement;
 
 const avatar = createAvatarRenderer(canvas);
-let refreshGeneration = 0;
+let loadGeneration = 0;
 
 async function refreshAvatar(): Promise<void> {
-  const generation = ++refreshGeneration;
+  const generation = ++loadGeneration;
   avatar.clear();
+  hint.textContent = "";
+  hint.hidden = true;
 
   try {
     const bytes = await window.seien.loadAvatar();
 
+    if (generation !== loadGeneration) {
+      return;
+    }
+
     if (bytes === null) {
-      if (generation === refreshGeneration) {
-        hint.textContent = chooseAvatarHint;
-        hint.hidden = false;
-      }
-
+      hint.textContent = chooseAvatarHint;
+      hint.hidden = false;
       return;
     }
 
-    const shown = await avatar.load(bytes);
+    const parsed = await avatar.parse(bytes);
 
-    if (!shown || generation !== refreshGeneration) {
+    if (generation !== loadGeneration) {
+      VRMUtils.deepDispose(parsed.scene);
       return;
     }
 
+    avatar.show(parsed);
+    hint.textContent = "";
     hint.hidden = true;
   } catch {
-    if (generation !== refreshGeneration) {
+    if (generation !== loadGeneration) {
       return;
     }
 

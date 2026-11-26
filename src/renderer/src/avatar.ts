@@ -5,14 +5,9 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { blinkWeight, breath } from "./motion";
 
 type AvatarRenderer = {
-  load(bytes: ArrayBuffer): Promise<boolean>;
+  parse(bytes: ArrayBuffer): Promise<VRM>;
+  show(avatar: VRM): void;
   clear(): void;
-};
-
-type DragState = {
-  pointerId: number;
-  clientX: number;
-  clientY: number;
 };
 
 export function createAvatarRenderer(canvas: HTMLCanvasElement): AvatarRenderer {
@@ -33,15 +28,13 @@ export function createAvatarRenderer(canvas: HTMLCanvasElement): AvatarRenderer 
 
   const gl = renderer.getContext();
   const pixel = new Uint8Array(4);
-  const pixelView = new DataView(pixel.buffer);
-  const clock = new THREE.Clock();
+  const timer = new THREE.Timer();
 
   let vrm: VRM | undefined;
-  let loadGeneration = 0;
   let hit = false;
-  let forceHit = false;
+  let needsReCheck = false;
   let pointer: { x: number; y: number } | undefined;
-  let drag: DragState | undefined;
+  let dragPointerId: number | undefined;
 
   function resize(): void {
     renderer.setPixelRatio(window.devicePixelRatio);
@@ -63,7 +56,23 @@ export function createAvatarRenderer(canvas: HTMLCanvasElement): AvatarRenderer 
     vrm = undefined;
   }
 
+  function lowerArms(avatar: VRM): void {
+    const leftUpperArm = avatar.humanoid.getNormalizedBoneNode("leftUpperArm");
+
+    if (leftUpperArm) {
+      leftUpperArm.rotateZ(-1.2);
+    }
+
+    const rightUpperArm = avatar.humanoid.getNormalizedBoneNode("rightUpperArm");
+
+    if (rightUpperArm) {
+      rightUpperArm.rotateZ(1.2);
+    }
+  }
+
   function frameAvatar(avatar: VRM): void {
+    avatar.scene.updateMatrixWorld(true);
+
     const bounds = new THREE.Box3().setFromObject(avatar.scene);
     const size = bounds.getSize(new THREE.Vector3());
     const center = bounds.getCenter(new THREE.Vector3());
@@ -88,9 +97,10 @@ export function createAvatarRenderer(canvas: HTMLCanvasElement): AvatarRenderer 
     }
 
     const bounds = canvas.getBoundingClientRect();
-    const pixelRatio = window.devicePixelRatio;
-    const x = Math.floor((pointer.x - bounds.left) * pixelRatio);
-    const y = gl.drawingBufferHeight - Math.floor((pointer.y - bounds.top) * pixelRatio) - 1;
+    const scaleX = gl.drawingBufferWidth / bounds.width;
+    const scaleY = gl.drawingBufferHeight / bounds.height;
+    const x = Math.floor((pointer.x - bounds.left) * scaleX);
+    const y = gl.drawingBufferHeight - Math.floor((pointer.y - bounds.top) * scaleY) - 1;
 
     if (x < 0 || y < 0 || x >= gl.drawingBufferWidth || y >= gl.drawingBufferHeight) {
       return false;
@@ -98,66 +108,89 @@ export function createAvatarRenderer(canvas: HTMLCanvasElement): AvatarRenderer 
 
     gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
 
-    return pixelView.getUint8(3) > 0;
+    return pixel[3]! > 0;
   }
 
   function updateHit(): void {
-    const over = isPointerOverAvatar();
-    const changed = over !== hit;
+    if (!needsReCheck) {
+      return;
+    }
 
-    if (!forceHit && !changed) {
+    if (gl.isContextLost()) {
+      return;
+    }
+
+    needsReCheck = false;
+
+    if (dragPointerId !== undefined) {
+      return;
+    }
+
+    const over = isPointerOverAvatar();
+
+    if (over === hit) {
       return;
     }
 
     hit = over;
-    forceHit = false;
     window.seien.setHit(over);
   }
 
   function rememberPointer(event: PointerEvent): void {
     pointer = { x: event.clientX, y: event.clientY };
+    needsReCheck = true;
   }
 
   canvas.addEventListener("pointerdown", (event) => {
     rememberPointer(event);
 
-    if (!hit || drag) {
+    if (event.button !== 0 || !hit || dragPointerId !== undefined) {
       return;
     }
 
-    drag = { pointerId: event.pointerId, clientX: event.clientX, clientY: event.clientY };
+    dragPointerId = event.pointerId;
     canvas.setPointerCapture(event.pointerId);
+    window.seien.dragStart();
   });
 
   canvas.addEventListener("pointermove", (event) => {
     rememberPointer(event);
 
-    const currentDrag = drag;
-
-    if (!currentDrag || event.pointerId !== currentDrag.pointerId) {
+    if (event.pointerId !== dragPointerId) {
       return;
     }
 
-    window.seien.dragBy(event.clientX - currentDrag.clientX, event.clientY - currentDrag.clientY);
+    window.seien.dragMove();
   });
 
   function endDrag(event: PointerEvent): void {
-    const currentDrag = drag;
-
-    if (!currentDrag || event.pointerId !== currentDrag.pointerId) {
+    if (event.pointerId !== dragPointerId) {
       return;
     }
 
-    drag = undefined;
+    dragPointerId = undefined;
     window.seien.dragEnd();
+    needsReCheck = true;
   }
 
   canvas.addEventListener("pointerup", endDrag);
   canvas.addEventListener("pointercancel", endDrag);
+  canvas.addEventListener("lostpointercapture", endDrag);
 
-  function frame(): void {
-    const delta = clock.getDelta();
-    const seconds = clock.elapsedTime;
+  canvas.addEventListener("pointerleave", () => {
+    if (dragPointerId !== undefined) {
+      return;
+    }
+
+    pointer = undefined;
+    needsReCheck = true;
+  });
+
+  function frame(timestamp: number): void {
+    timer.update(timestamp);
+
+    const delta = timer.getDelta();
+    const seconds = timer.getElapsed();
     const currentVrm = vrm;
 
     if (currentVrm) {
@@ -184,41 +217,38 @@ export function createAvatarRenderer(canvas: HTMLCanvasElement): AvatarRenderer 
   requestAnimationFrame(frame);
 
   return {
-    async load(bytes) {
-      const generation = ++loadGeneration;
+    async parse(bytes) {
       const gltf = await loader.parseAsync(bytes, "");
-      const loaded = gltf.userData.vrm as VRM | undefined;
+      const parsed = gltf.userData.vrm as VRM | undefined;
 
-      if (!(loaded instanceof VRM)) {
+      if (!(parsed instanceof VRM)) {
         VRMUtils.deepDispose(gltf.scene);
         throw new Error("The file does not contain a VRM avatar");
       }
 
-      if (generation !== loadGeneration) {
-        VRMUtils.deepDispose(loaded.scene);
-        return false;
-      }
+      return parsed;
+    },
 
-      VRMUtils.rotateVRM0(loaded);
+    show(avatar) {
+      disposeCurrent();
+      VRMUtils.rotateVRM0(avatar);
+      lowerArms(avatar);
 
       try {
-        frameAvatar(loaded);
+        frameAvatar(avatar);
       } catch (error) {
-        VRMUtils.deepDispose(loaded.scene);
+        VRMUtils.deepDispose(avatar.scene);
         throw error;
       }
 
-      disposeCurrent();
-      vrm = loaded;
-      scene.add(loaded.scene);
-      forceHit = true;
-
-      return true;
+      vrm = avatar;
+      scene.add(avatar.scene);
+      needsReCheck = true;
     },
 
     clear() {
-      loadGeneration += 1;
       disposeCurrent();
+      needsReCheck = true;
     },
   };
 }
