@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadSettings, saveSettings } from "../../src/main/settings";
@@ -30,10 +30,10 @@ describe("loadSettings", () => {
     });
   });
 
-  test("returns empty settings when the JSON is not an object", () => {
+  test.each(["[1, 2]", "null", "5"])("returns empty settings when the JSON is %s", (json) => {
     withDir((dir) => {
       const file = join(dir, "settings.json");
-      writeFileSync(file, "[1, 2]");
+      writeFileSync(file, json);
 
       expect(loadSettings(file)).toEqual({});
     });
@@ -53,6 +53,8 @@ describe("loadSettings", () => {
     ["y is missing", { x: 137 }],
     ["x is null", { x: null, y: 211 }],
     ["x is fractional", { x: 137.5, y: 211 }],
+    ["y is fractional", { x: 137, y: 211.5 }],
+    ["window is null", null],
     ["window is not an object", "137,211"],
   ])("drops the window position when %s", (_name, window) => {
     withDir((dir) => {
@@ -65,6 +67,16 @@ describe("loadSettings", () => {
 });
 
 describe("saveSettings", () => {
+  test("throws and leaves no temporary file behind when the target cannot be replaced", () => {
+    withDir((dir) => {
+      const file = join(dir, "settings.json");
+      mkdirSync(join(file, "occupied"), { recursive: true });
+
+      expect(() => saveSettings(file, { window: { x: 1, y: 2 } })).toThrow(/settings\.json/);
+      expect(readdirSync(dir)).toEqual(["settings.json"]);
+    });
+  });
+
   test("writes settings that loadSettings reads back", () => {
     withDir((dir) => {
       const file = join(dir, "settings.json");
