@@ -98,6 +98,23 @@ function windowPosition(app: ElectronApplication): Promise<number[] | undefined>
   return app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.getPosition());
 }
 
+// No hint is shown while an avatar loads, so a hidden hint does not mean it is on screen yet.
+// Taking the mouse over the body does. The pointer is nudged on every attempt because a move
+// sent before the page has started listening is lost, and a still pointer is not looked at again.
+async function avatarTakesMouse(
+  page: Page,
+  lastIgnoreCall: () => Promise<IgnoreCall | undefined>,
+): Promise<void> {
+  let nudge = 0;
+
+  await expect(async () => {
+    nudge = 1 - nudge;
+    await page.mouse.move(140 + nudge, 300);
+    expect(await lastIgnoreCall()).toEqual(onAvatar);
+  }, "the avatar is shown").toPass({ timeout: 20_000 });
+  await page.mouse.move(140, 300);
+}
+
 async function shownAvatar(
   userData: string,
   extraArgs: string[] = [],
@@ -111,10 +128,7 @@ async function shownAvatar(
   try {
     const page = await app.firstWindow();
     const lastIgnoreCall = await recordIgnoreCalls(app);
-    // No hint is shown while an avatar loads, so a hidden hint does not mean it is on screen yet.
-    // Taking the mouse over the body does.
-    await page.mouse.move(140, 300);
-    await expect.poll(lastIgnoreCall, "the avatar is shown").toEqual(onAvatar);
+    await avatarTakesMouse(page, lastIgnoreCall);
     await expect(page.locator("#hint")).toBeHidden();
     await expect(page.locator("#hint")).toHaveText("");
 
@@ -202,8 +216,7 @@ test("loads a textured avatar without tripping the content security policy", asy
   try {
     const page = await app.firstWindow();
     const lastIgnoreCall = await recordIgnoreCalls(app);
-    await page.mouse.move(140, 300);
-    await expect.poll(lastIgnoreCall, "the avatar is shown").toEqual(onAvatar);
+    await avatarTakesMouse(page, lastIgnoreCall);
 
     expect(errors).toEqual([]);
   } finally {
@@ -446,8 +459,7 @@ test("lets clicks through again after the page reloads under the pointer", async
     await page.reload();
     await expect.poll(lastIgnoreCall, "the new page has not seen the pointer").toEqual(offAvatar);
 
-    await page.mouse.move(141, 301);
-    await expect.poll(lastIgnoreCall).toEqual(onAvatar);
+    await avatarTakesMouse(page, lastIgnoreCall);
   } finally {
     await quit(app);
   }
